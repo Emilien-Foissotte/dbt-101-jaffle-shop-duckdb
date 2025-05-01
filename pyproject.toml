@@ -1,0 +1,13 @@
+[project]
+name = "jaffle-shop"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dbt-athena-community (>=1.9.2,<2.0.0)",
+    "dbt-glue (>=1.9.2,<2.0.0)",
+    "apache-airflow (>=2.9,<3.0)",
+    "astronomer-cosmos (>=1.4,<2.0)",
+    "dbt-duckdb>=1.9.3",
+]

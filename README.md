@@ -57,91 +57,87 @@ and review the docs
 
 ## Write
 
-- Add a new script `core/core_expenses.sql`
+- Add a new script `core/core_churned_customers.sql`
+
+The idea is to detect recurring customers which have not ordered since 30 days.
 
 ```sh
 echo '''
-with customer_orders as (
-
-    select
+WITH customer_orders AS (
+    SELECT
         customer_id,
-
-        min(order_date) as first_order,
-        max(order_date) as most_recent_order,
-        count(order_id) as number_of_orders
-    from staging.orders
-
-    group by customer_id
-
+        COUNT(order_id) AS total_orders,
+        MAX(order_date) AS last_order_date
+    FROM {{ ref('core_orders') }}
+    GROUP BY customer_id
 ),
-
-customer_payments as (
-
-    select
-        orders.customer_id,
-        sum(payments.amount) as total_amount
-
-    from staging.payments as payments
-
-    left join staging.orders as orders
-        on payments.order_id = orders.order_id
-
-    group by orders.customer_id
-
+max_order_date AS (
+    SELECT MAX(order_date) AS max_date,
+    30 AS max_days
+    FROM {{ ref('core_orders') }}
 ),
+churned_customers AS (
+    SELECT
+        customer_id,
+        co.median_order_value,
 
-expenses as (
-    select
-        customers.customer_id,
-        customers.first_name,
-        customers.last_name,
-        customer_orders.first_order,
-        customer_orders.most_recent_order,
-        customer_orders.number_of_orders,
-        customer_payments.total_amount as customer_lifetime_value
-    from staging.customers as customers --comment here
-    left join customer_orders  --comment here
-      on customers.customer_id = customer_orders.customer_id  --comment here
-    -- FROM customer_orders  --uncomment here
-    -- left join staging.customers as customers  --uncomment here
-    --     on  customer_orders.customer_id = customers.customer_id  --uncomment here
-    left join customer_payments
-        on customers.customer_id = customer_payments.customer_id
+        DATE_DIFF('day', co.last_order_date, max_date) AS days_since_last_order
+    FROM {{ ref('core_customers') }} AS cc, max_order_date
+    LEFT JOIN customer_orders AS co ON cc.customer_id = co.customer_id
+    WHERE total_orders > 1
+      AND DATE_DIFF('day', last_order_date, max_date) > max_days
 )
-
-select * from expenses
-''' > models/core/core_expenses.sql
+SELECT
+    customer_id,
+    median_order_value,
+    ROUND(median_order_value * 0.20, 2) AS coupon_amount
+FROM churned_customers
+''' > models/core/core_churned_customers.sql
 ```
 
 ```sh
 echo '''
-SELECT *
-FROM {{ref('core_expenses')}}
-WHERE customer_lifetime_value IS NULL
-
-''' > tests/assert_customer_lifetime_value_not_null
+WITH customers_with_coupouns AS (
+  SELECT
+    customer_id
+  FROM
+    {{ ref('core_churned_customers') }}
+),
+customer_orders_counts AS (
+  SELECT
+    customer_id,
+    COUNT(order_id) AS total_orders,
+  FROM {{ ref('core_orders') }}
+  GROUP BY customer_id
+)
+SELECT
+  c.customer_id
+FROM customers_with_coupouns AS c
+LEFT JOIN customer_orders_counts AS co
+  ON c.customer_id = co.customer_id
+WHERE total_orders <= 1
+''' > tests/assert_coupon_generated_recurring_customers_only.sql
 ```
+
+A new test is written to ensure only recurring customers are given coupons.
 
 ## Audit
 
-- Run the scripts `dbt build` : `lea_duckdb_max.tests.core__expenses__customer_lifetime_value___no_nulls___audit` is failing ❌
-- Uncomment and comment lines to reverse the JOIN orders, and exclude customers absent from orders tables.
+- Run the new models `dbt build && dbt test` : test `assert_coupon_generated_recurring_customers_only` is failing ❌
+- Uncomment and comment lines to exclude new customers with only 1 order adding a filter in WHERE clause.
 
 ```sh
-sed -i '' '/--comment here/s/^/--/' scripts/core/expenses.sql
-sed -i '' '/--uncomment here/s/-- //' scripts/core/expenses.sql
+sed -i '' '/--uncomment here/s/-- //' tests/assert_coupon_generated_recurring_customers_only.sql
 ```
 
-- Run again scripts, you should see that all stagings audit tables are not executed again.
-- `core.expenses` is executed as lea detected modification on the script
+- Run again models with `dbt build`
 - All tests are now passing 🎉
-- Audit tables are wiped out from development warehouse.
 
 ## Publish
 
 - As all tests passed, tables are materialized in the development warehouse.
-- If you want now to run it against production and not development warehouse, you would add a `--production` flag to each command:
+- If you want now to run it against production and not development warehouse, you would target `prod` profile
 
 ```sh
-lea run --production
+uv run dbt build --target prod
 ```
